@@ -1,342 +1,126 @@
 import streamlit as st
 import sqlite3
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 import plotly.express as px
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-from sklearn.metrics import mean_squared_error
-from datetime import datetime, timedelta
-
-plt.style.use('ggplot')
+import numpy as np
+import matplotlib.pyplot as plt
 
 def main():
-    st.header("📈 Prediksi Stok dengan ARIMA", divider="green")
+    # Judul halaman
+    st.header("📈 Prediksi Stok", divider="green")
+
+    # Koneksi ke database
     conn = sqlite3.connect('data/stok.db')
     c = conn.cursor()
 
-    # Ambil daftar produk
+    # Pilih produk
     produk = c.execute("SELECT id, nama FROM produk").fetchall()
     if not produk:
-        st.warning("Tidak ada produk tersedia!", icon="⚠️")
+        st.warning("Tidak ada produk tersedia. Silakan tambah produk terlebih dahulu.", icon="⚠️")
+        conn.close()
         return
+    daftar_produk = [p[1] for p in produk]
+    produk_pilihan = st.selectbox("Pilih Produk untuk Prediksi", daftar_produk)
+    produk_id = [p[0] for p in produk if p[1] == produk_pilihan][0]
 
-    # Pilih produk
-    selected_produk_id = st.selectbox(
-        "📦 Pilih Produk",
-        options=[p[0] for p in produk],
-        format_func=lambda x: next(p[1] for p in produk if p[0] == x),
-        help="Pilih produk untuk prediksi"
+    # 1. Data Transaksi Barang Terpilih
+    st.subheader("Data Transaksi Keluar Barang Terpilih")
+    df_transaksi = pd.read_sql_query(
+        f"SELECT tanggal, jumlah FROM transaksi_keluar WHERE produk_id = {produk_id} ORDER BY tanggal",
+        conn,
+        parse_dates=['tanggal']
     )
-    selected_produk_nama = next(p[1] for p in produk if p[0] == selected_produk_id)
-
-    # Ambil data transaksi keluar 3 tahun terakhir
-    df = pd.read_sql_query('''
-        SELECT 
-            tanggal AS Tanggal,
-            jumlah AS Jumlah
-        FROM transaksi_keluar
-        WHERE produk_id = ? AND tanggal >= date('now', '-3 years')
-        ORDER BY tanggal ASC
-    ''', conn, params=(selected_produk_id,))
-
-    if df.empty:
-        st.warning(f"Tidak ada data transaksi untuk {selected_produk_nama} dalam 3 tahun terakhir!", icon="⚠️")
-        return
-
-    # Konversi ke time series bulanan
-    try:
-        # Pastikan kolom Tanggal hanya berisi tanggal (tanpa waktu)
-        df['Tanggal'] = pd.to_datetime(df['Tanggal'])  # Ubah ke datetime
-        df['Tanggal'] = df['Tanggal'].dt.date  # Ambil hanya bagian tanggal
-        df['Tanggal'] = pd.to_datetime(df['Tanggal'])  # Konversi ulang ke datetime untuk konsistensi
-
-        # Pastikan kolom Jumlah numerik
-        df['Jumlah'] = pd.to_numeric(df['Jumlah'], errors='coerce')  # Konversi ke numerik, abaikan nilai invalid
-        df = df.dropna(subset=['Jumlah'])  # Hapus baris dengan nilai NaN di kolom Jumlah
-
-        # Resample ke bulanan
-        df.set_index('Tanggal', inplace=True)
-        monthly_data = df.resample('ME').sum()  # Menggunakan ME (Month End)
-    except Exception as e:
-        st.error(f"Error konversi data: {str(e)}", icon="❌")
-        return
-
-    # Validasi panjang data
-    if len(monthly_data) < 12:
-        st.warning("Data transaksi tidak cukup untuk analisis yang reliable. Minimal 12 bulan data diperlukan", 
-                   icon="⚠️")
-        return
-
-    # Tampilkan data dalam format 6 kolom
-    st.subheader(f"Data Transaksi {selected_produk_nama} (3 Tahun Terakhir)")
-    num_groups = 3  # Setiap grup terdiri dari 2 kolom (Tanggal dan Jumlah)
-    split_data = np.array_split(monthly_data.reset_index(), num_groups)
-    combined_data = pd.concat(
-        [group.reset_index(drop=True) for group in split_data], axis=1
-    )
-    column_names = []
-    for i in range(num_groups):
-        column_names.extend([f"Tanggal_{i+1}", f"Jumlah_{i+1}"])
-    combined_data.columns = column_names
-    st.dataframe(
-        combined_data,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            f"Tanggal_{i+1}": st.column_config.DateColumn(f"Tanggal {i+1}")
-            for i in range(num_groups)
-        } | {
-            f"Jumlah_{i+1}": st.column_config.NumberColumn(f"Jumlah {i+1}", format="%d")
-            for i in range(num_groups)
-        }
-    )
-
-    # Plot data asli
-    st.subheader("Grafik Transaksi")
-    fig = px.line(
-        monthly_data,
-        y='Jumlah',
-        title='Pola Transaksi Bulanan',
-        labels={'Jumlah': 'Jumlah Transaksi', 'Tanggal': 'Bulan'},
-        template='plotly_white'
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Uji stasioneritas
-    st.subheader("Uji Stasioneritas")
-    result = adfuller(monthly_data['Jumlah'].dropna())
-    st.write(f'ADF Statistic: {result[0]:.4f}')
-    st.write(f'p-value: {result[1]:.4f}')
-    st.write('Critical Values:')
-    for key, value in result[4].items():
-        st.write(f'  {key}: {value:.4f}')
-
-    # Differencing jika tidak stasioner
-    if result[1] > 0.05:
-        st.warning("Data tidak stasioner! Melakukan differencing...", icon="⚠️")
-        differenced = monthly_data.diff().dropna()
-        
-        # Validasi data differencing
-        if len(differenced) < 12:
-            st.warning("Data terlalu sedikit setelah differencing", icon="⚠️")
-            return
-        if differenced['Jumlah'].var() == 0:
-            st.warning("Data tidak memiliki variasi setelah differencing", icon="⚠️")
-            return
-            
-        # Plot differenced data
-        st.subheader("Grafik Data Differensiasi")
-        fig_diff = px.line(
-            differenced,
-            y='Jumlah',
-            title='Data Setelah Differencing',
-            labels={'Jumlah': 'Perubahan Jumlah', 'Tanggal': 'Bulan'},
-            template='plotly_white'
-        )
-        st.plotly_chart(fig_diff, use_container_width=True)
-        
-        # Uji stasioneritas setelah differencing
-        result_diff = adfuller(differenced['Jumlah'].dropna())
-        st.write("Hasil Uji Differencing:")
-        st.write(f'ADF Statistic: {result_diff[0]:.4f}')
-        st.write(f'p-value: {result_diff[1]:.4f}')
-    else:
-        differenced = monthly_data
-
-    # Fungsi helper untuk plot dengan penanganan error
-    def safe_plot(plot_func, data_series, *args, **kwargs):
-        try:
-            fig, ax = plt.subplots(figsize=(10,4))
-            sample_size = len(data_series)
-            max_allowed_lags = (sample_size - 1) // 2 - 1
-            max_lag = min(20, max_allowed_lags)
-            
-            if max_lag < 1:
-                st.warning("Data terlalu pendek untuk analisis PACF", icon="⚠️")
-                return None
-                
-            plot_func(data_series, lags=max_lag, ax=ax, **kwargs)
-            return fig
-        except Exception as e:
-            st.error(f"Plot gagal: {str(e)}", icon="❌")
-            return None
-
-    # Plot ACF dan PACF
-    st.subheader("Analisis ACF dan PACF")
-    col1, col2 = st.columns(2)
-    with col1:
-        fig_acf = safe_plot(plot_acf, differenced['Jumlah'])
-        if fig_acf:
-            st.pyplot(fig_acf)
-    with col2:
-        fig_pacf = safe_plot(plot_pacf, differenced['Jumlah'])
-        if fig_pacf:
-            st.pyplot(fig_pacf)
-
-    # Pencarian parameter ARIMA terbaik
-    st.subheader("Pemilihan Model ARIMA")
-    p_values = range(0, 3)
-    q_values = range(0, 3)
-    d = 1 if result[1] > 0.05 else 0
-
-    best_mse = np.inf
-    best_order = None
-    results = []
-
-    with st.spinner("Mencari model terbaik..."):
-        for p in p_values:
-            for q in q_values:
-                try:
-                    model = ARIMA(
-                        monthly_data,
-                        order=(p, d, q),
-                        enforce_invertibility=True,
-                        enforce_stationarity=True
-                    )
-                    # Hapus parameter 'maxiter' dan gunakan default fit()
-                    results_fit = model.fit(method_kwargs={"warn_convergence": False})
-                    
-                    mse = mean_squared_error(
-                        monthly_data['Jumlah'][d:], 
-                        results_fit.fittedvalues
-                    )
-                    results.append({
-                        'order': f'({p},{d},{q})',
-                        'MSE': mse,
-                        'AIC': results_fit.aic
-                    })
-                    if mse < best_mse:
-                        best_mse = mse
-                        best_order = (p, d, q)
-                except Exception as e:
-                    st.warning(f"Model ({p},{d},{q}) gagal: {str(e)}")
-                    continue
-
-    # Tampilkan hasil perbandingan
-    if results:
-        st.dataframe(
-            pd.DataFrame(results).sort_values('MSE'),
-            column_config={
-                "order": "Model Order",
-                "MSE": st.column_config.NumberColumn("MSE", format="%.2f"),
-                "AIC": st.column_config.NumberColumn("AIC", format="%.2f")
-            },
-            use_container_width=True
-        )
-
-        # Estimasi model terbaik
-        st.subheader(f"Model Terpilih: ARIMA{best_order}")
-        try:
-            final_model = ARIMA(
-                monthly_data,
-                order=best_order,
-                enforce_invertibility=True,
-                enforce_stationarity=True
-            )
-            # Fit model tanpa parameter maxiter
-            final_fit = final_model.fit(method_kwargs={"warn_convergence": False})
-
-            # Parsing hasil summary ke DataFrame
-            summary = final_fit.summary()
-            summary_tables = summary.tables  # Mengambil semua tabel dari summary
-
-            # Tabel 1: Informasi Model
-            info_model = pd.DataFrame({
-                "Parameter": ["Dep. Variable", "Model", "No. Observations", "Log Likelihood", "AIC", "BIC", "HQIC"],
-                "Value": [
-                    summary_tables[0].data[1][1],
-                    summary_tables[0].data[2][1],
-                    int(summary_tables[0].data[3][1]),
-                    float(summary_tables[0].data[4][1]),
-                    float(summary_tables[0].data[5][1]),
-                    float(summary_tables[0].data[6][1]),
-                    float(summary_tables[0].data[7][1])
-                ]
-            })
-
-            # Tabel 2: Koefisien Model
-            coef_table = pd.DataFrame(summary_tables[1].data[1:], columns=summary_tables[1].data[0])
-            coef_table.columns = ["Parameter", "Coef", "Std Err", "z", "P>|z|", "[0.025", "0.975]"]
-            coef_table["Coef"] = coef_table["Coef"].astype(float)
-            coef_table["Std Err"] = coef_table["Std Err"].astype(float)
-
-            # Tabel 3: Diagnostik Model
-            diagnostics = pd.DataFrame({
-                "Metric": ["Ljung-Box (Q)", "Prob(Q)", "Jarque-Bera (JB)", "Prob(JB)", "Heteroskedasticity (H)", "Skew", "Kurtosis"],
-                "Value": [
-                    float(summary_tables[2].data[1][1]),
-                    float(summary_tables[2].data[1][3]),
-                    float(summary_tables[2].data[2][1]),
-                    float(summary_tables[2].data[2][3]),
-                    float(summary_tables[2].data[3][1]),
-                    float(summary_tables[2].data[4][1]),
-                    float(summary_tables[2].data[5][1])
-                ]
-            })
-
-            # Menampilkan tabel-tabel
-            st.subheader("Informasi Model")
-            st.table(info_model)
-
-            st.subheader("Koefisien Model")
-            st.dataframe(coef_table.style.format({
-                "Coef": "{:.4f}",
-                "Std Err": "{:.4f}",
-                "z": "{:.4f}",
-                "P>|z|": "{:.4f}",
-                "[0.025": "{:.4f}",
-                "0.975]": "{:.4f}"
-            }), use_container_width=True)
-
-            st.subheader("Diagnostik Model")
-            st.table(diagnostics.style.format({"Value": "{:.4f}"}))
-
-            # Forecast 12 bulan ke depan
-            st.subheader("Peramalan untuk 12 Bulan ke Depan")
-            forecast = final_fit.get_forecast(steps=12)
-            forecast_index = pd.date_range(
-                start=monthly_data.index[-1] + timedelta(days=1),
-                periods=12,
-                freq='ME'  # Menggunakan ME (Month End)
-            )
-
-            # Plot forecast
-            fig_forecast = px.line(
-                title='Peramalan Stok',
-                template='plotly_white'
-            )
-            fig_forecast.add_scatter(
-                x=monthly_data.index,
-                y=monthly_data['Jumlah'],
-                name='Data Historis'
-            )
-            fig_forecast.add_scatter(
-                x=forecast_index,
-                y=forecast.predicted_mean,
-                name='Peramalan',
-                line=dict(dash='dash')
-            )
-            fig_forecast.add_scatter(
-                x=forecast_index,
-                y=forecast.conf_int().iloc[:, 0],
-                line=dict(color='rgba(255,0,0,0.2)'),
-                name='Interval Kepercayaan'
-            )
-            fig_forecast.add_scatter(
-                x=forecast_index,
-                y=forecast.conf_int().iloc[:, 1],
-                line=dict(color='rgba(255,0,0,0.2)'),
-                name='Interval Kepercayaan',
-                showlegend=False
-            )
-            st.plotly_chart(fig_forecast, use_container_width=True)
-
-        except Exception as e:
-            st.error(f"Gagal membuat peramalan: {str(e)}", icon="❌")
-    else:
-        st.warning("Tidak ada model ARIMA yang valid ditemukan", icon="⚠️")
-
     conn.close()
+
+    if df_transaksi.empty:
+        st.warning("Tidak ada data transaksi keluar untuk produk ini.", icon="⚠️")
+        return
+
+    # Agregasi data per bulan (3 tahun terakhir)
+    df_transaksi.set_index('tanggal', inplace=True)
+    df_monthly = df_transaksi.resample('M').sum().reset_index()
+    st.dataframe(df_monthly)
+
+    # 2. Grafik Data Transaksi Barang Terpilih
+    st.subheader("Grafik Data Transaksi Keluar")
+    fig_transaksi = px.line(df_monthly, x='tanggal', y='jumlah', title='Transaksi Keluar Bulanan')
+    st.plotly_chart(fig_transaksi, use_container_width=True)
+
+    # 3. Uji Stasioneritas dan Differensiasi
+    st.subheader("Uji Stasioneritas (ADF Test)")
+    result = adfuller(df_monthly['jumlah'])
+    st.write(f"ADF Statistic: {result[0]}")
+    st.write(f"p-value: {result[1]}")
+    if result[1] > 0.05:
+        st.write("Data tidak stasioner, dilakukan differensiasi.")
+        df_diff = df_monthly['jumlah'].diff().dropna()
+        # 4. Grafik Data Differensiasi
+        st.subheader("Grafik Data Setelah Differensiasi")
+        fig_diff = px.line(df_diff, title='Data Setelah Differensiasi')
+        st.plotly_chart(fig_diff, use_container_width=True)
+    else:
+        st.write("Data sudah stasioner, asumsi metode ARIMA terpenuhi.")
+        df_diff = df_monthly['jumlah']
+
+    # 5. Plot ACF dan PACF
+    st.subheader("Plot Autokorelasi (ACF) dan Autokorelasi Parsial (PACF)")
+    fig_acf, ax_acf = plt.subplots()
+    plot_acf(df_diff, lags=20, ax=ax_acf)
+    st.pyplot(fig_acf)
+
+    fig_pacf, ax_pacf = plt.subplots()
+    plot_pacf(df_diff, lags=20, ax=ax_pacf)
+    st.pyplot(fig_pacf)
+
+    # 6. Estimasi Model ARIMA
+    st.subheader("Estimasi Model ARIMA")
+    models = [(1,1,1), (0,1,1), (1,1,2)]  # Contoh kombinasi model
+    model_results = {}
+    for order in models:
+        try:
+            model = ARIMA(df_monthly['jumlah'], order=order)
+            results = model.fit()
+            model_results[order] = results
+            st.write(f"Model {order} berhasil diestimasi.")
+        except Exception as e:
+            st.write(f"Model {order} gagal: {str(e)}")
+
+    # 7. Pemilihan Model Terbaik
+    st.subheader("Pemilihan Model Terbaik")
+    best_model = None
+    best_mse = np.inf
+    for order, results in model_results.items():
+        forecast = results.forecast(steps=12)
+        # Gunakan data terakhir untuk evaluasi sederhana (pseudo-MSE)
+        if len(df_monthly) >= 12:
+            actual = df_monthly['jumlah'][-12:]
+            mse = np.mean((forecast - actual) ** 2)
+        else:
+            mse = results.mse  # Gunakan MSE dari model jika data kurang
+        st.write(f"Model {order}: MSE = {mse}")
+        if mse < best_mse:
+            best_mse = mse
+            best_model = results
+
+    if best_model:
+        st.write(f"Model Terbaik: Order {best_model.model.order}, MSE: {best_mse}")
+    else:
+        st.error("Tidak ada model yang cocok ditemukan.", icon="❌")
+        return
+
+    # 8. Peramalan
+    st.subheader("Peramalan untuk 12 Bulan ke Depan")
+    forecast = best_model.forecast(steps=12)
+    forecast_dates = pd.date_range(start=df_monthly['tanggal'].iloc[-1], periods=13, freq='M')[1:]
+    df_forecast = pd.DataFrame({'tanggal': forecast_dates, 'prediksi': forecast})
+    st.dataframe(df_forecast)
+
+    # Grafik Peramalan
+    fig_forecast = px.line(df_forecast, x='tanggal', y='prediksi', title='Prediksi Pengadaan Barang')
+    st.plotly_chart(fig_forecast, use_container_width=True)
+
+if __name__ == "__main__":
+    main()
