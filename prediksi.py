@@ -95,17 +95,25 @@ def main():
             return
 
     elif model_choice == "SARIMA":
-        try:
-            model = SARIMAX(df_history['total_keluar'], 
-                           order=(1,1,1), 
-                           seasonal_order=(1,1,1,12))
-            results = model.fit(disp=False)
-            forecast = results.get_forecast(steps=periode_prediksi)
-            forecast_mean = forecast.predicted_mean
-            conf_int = forecast.conf_int(alpha=(100 - model_confidence)/100)
-        except Exception as e:
-            st.error(f"Gagal membuat model SARIMA: {str(e)}")
-            return
+    try:
+        model = SARIMAX(df_history['total_keluar'], 
+                       order=(1,1,1), 
+                       seasonal_order=(1,1,1,12))
+        results = model.fit(disp=False)
+        forecast = results.get_forecast(steps=periode_prediksi)
+        forecast_mean = forecast.predicted_mean
+        conf_int = forecast.conf_int(alpha=(100 - model_confidence)/100)
+        
+        # Perbaikan: Gunakan nama kolom yang valid
+        df_forecast = pd.DataFrame({
+            'bulan': future_dates,
+            'prediksi': forecast_mean,
+            'lower_ci': conf_int['lower'],  # Ganti indeks dengan nama kolom
+            'upper_ci': conf_int['upper']   # Ganti indeks dengan nama kolom
+        }).set_index('bulan')
+    except Exception as e:
+        st.error(f"Gagal membuat model SARIMA: {str(e)}")
+        return
 
     elif model_choice == "Prophet":
         try:
