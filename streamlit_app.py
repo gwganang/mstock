@@ -1,5 +1,6 @@
 import streamlit as st
 from database import init_db
+import os
 
 # Konfigurasi Awal
 st.set_page_config(
@@ -52,13 +53,18 @@ st.markdown(
 )
 
 # Sidebar Navigation
-st.sidebar.image("https://via.placeholder.com/150",
-                 use_container_width=True, caption="MStock Inventory")
+logo_path = "icon/icon.png"
+if os.path.exists(logo_path):
+    st.sidebar.image(logo_path, use_container_width=True, caption="MStock Inventory")
+else:
+    st.sidebar.image("https://via.placeholder.com/150", use_container_width=True, caption="MStock Inventory")
+
 pages = {
     "📊 Dashboard": "Dashboard",
     "📦 Produk": "Produk",
     "📥 Transaksi Masuk": "Transaksi Masuk",
-    "📤 Transaksi Keluar": "Transaksi Keluar"
+    "📤 Transaksi Keluar": "Transaksi Keluar",
+    "📈 Prediksi Stok": "Prediksi Stok"  # Menambahkan menu prediksi
 }
 
 selected_page = st.sidebar.selectbox(
@@ -83,6 +89,9 @@ elif page == "Produk":
 elif page == "Transaksi Masuk":
     from transaksi_masuk import main as masuk_page
     masuk_page()
+elif page == "Prediksi Stok":  # Routing untuk menu prediksi
+    from prediksi import main as prediksi_page
+    prediksi_page()
 else:  # Transaksi Keluar
     from transaksi_keluar import main as keluar_page
     keluar_page()
