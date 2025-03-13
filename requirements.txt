@@ -2,6 +2,8 @@ streamlit
 pandas
 numpy
 plotly
-matplotlib
 statsmodels
-pmdarima
+pystan
+prophet
+tensorflow
+scikit-learn
