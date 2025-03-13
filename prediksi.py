@@ -47,9 +47,19 @@ def main():
         return
 
     # Konversi ke time series bulanan
-    df['Tanggal'] = pd.to_datetime(df['Tanggal'])
-    df.set_index('Tanggal', inplace=True)
-    monthly_data = df.resample('M').sum()
+    try:
+        df['Tanggal'] = pd.to_datetime(df['Tanggal'])
+        df.set_index('Tanggal', inplace=True)
+        monthly_data = df.resample('M').sum()
+    except Exception as e:
+        st.error(f"Error konversi data: {str(e)}", icon="❌")
+        return
+
+    # Validasi panjang data
+    if len(monthly_data) < 12:
+        st.warning("Data transaksi tidak cukup untuk analisis yang reliable. Minimal 12 bulan data diperlukan", 
+                   icon="⚠️")
+        return
 
     # Tampilkan data
     st.subheader(f"Data Transaksi {selected_produk_nama} (3 Tahun Terakhir)")
@@ -80,6 +90,14 @@ def main():
         st.warning("Data tidak stasioner! Melakukan differencing...", icon="⚠️")
         differenced = monthly_data.diff().dropna()
         
+        # Validasi data differencing
+        if len(differenced) < 12:
+            st.warning("Data terlalu sedikit setelah differencing", icon="⚠️")
+            return
+        if differenced['Jumlah'].var() == 0:
+            st.warning("Data tidak memiliki variasi setelah differencing", icon="⚠️")
+            return
+            
         # Plot differenced data
         st.subheader("Grafik Data Differensiasi")
         fig_diff = px.line(
@@ -99,17 +117,28 @@ def main():
     else:
         differenced = monthly_data
 
+    # Fungsi helper untuk plot dengan penanganan error
+    def safe_plot(plot_func, *args, **kwargs):
+        try:
+            fig, ax = plt.subplots(figsize=(10,4))
+            max_lag = min(20, len(differenced)-1)
+            plot_func(*args, lags=max_lag, ax=ax, **kwargs)
+            return fig
+        except Exception as e:
+            st.error(f"Plot gagal: {str(e)}")
+            return None
+
     # Plot ACF dan PACF
     st.subheader("Analisis ACF dan PACF")
     col1, col2 = st.columns(2)
     with col1:
-        fig, ax = plt.subplots(figsize=(10,4))
-        plot_acf(differenced['Jumlah'], lags=20, ax=ax)
-        st.pyplot(fig)
+        fig_acf = safe_plot(plot_acf, differenced['Jumlah'])
+        if fig_acf:
+            st.pyplot(fig_acf)
     with col2:
-        fig, ax = plt.subplots(figsize=(10,4))
-        plot_pacf(differenced['Jumlah'], lags=20, ax=ax)
-        st.pyplot(fig)
+        fig_pacf = safe_plot(plot_pacf, differenced['Jumlah'])
+        if fig_pacf:
+            st.pyplot(fig_pacf)
 
     # Pencarian parameter ARIMA terbaik
     st.subheader("Pemilihan Model ARIMA")
@@ -139,64 +168,72 @@ def main():
                     if mse < best_mse:
                         best_mse = mse
                         best_order = (p, d, q)
-                except:
+                except Exception as e:
+                    st.warning(f"Model ({p},{d},{q}) gagal: {str(e)}")
                     continue
 
     # Tampilkan hasil perbandingan
-    st.dataframe(
-        pd.DataFrame(results).sort_values('MSE'),
-        column_config={
-            "order": "Model Order",
-            "MSE": st.column_config.NumberColumn("MSE", format="%.2f"),
-            "AIC": st.column_config.NumberColumn("AIC", format="%.2f")
-        },
-        use_container_width=True
-    )
+    if results:
+        st.dataframe(
+            pd.DataFrame(results).sort_values('MSE'),
+            column_config={
+                "order": "Model Order",
+                "MSE": st.column_config.NumberColumn("MSE", format="%.2f"),
+                "AIC": st.column_config.NumberColumn("AIC", format="%.2f")
+            },
+            use_container_width=True
+        )
 
-    # Estimasi model terbaik
-    st.subheader(f"Model Terpilih: ARIMA{best_order}")
-    final_model = ARIMA(monthly_data, order=best_order)
-    final_fit = final_model.fit()
-    st.text(final_fit.summary())
+        # Estimasi model terbaik
+        st.subheader(f"Model Terpilih: ARIMA{best_order}")
+        try:
+            final_model = ARIMA(monthly_data, order=best_order)
+            final_fit = final_model.fit()
+            st.text(final_fit.summary())
 
-    # Forecast 12 bulan ke depan
-    st.subheader("Peramalan untuk 12 Bulan ke Depan")
-    forecast = final_fit.get_forecast(steps=12)
-    forecast_index = pd.date_range(
-        start=monthly_data.index[-1] + timedelta(days=1),
-        periods=12,
-        freq='M'
-    )
+            # Forecast 12 bulan ke depan
+            st.subheader("Peramalan untuk 12 Bulan ke Depan")
+            forecast = final_fit.get_forecast(steps=12)
+            forecast_index = pd.date_range(
+                start=monthly_data.index[-1] + timedelta(days=1),
+                periods=12,
+                freq='M'
+            )
 
-    # Plot forecast
-    fig_forecast = px.line(
-        title='Peramalan Stok',
-        template='plotly_white'
-    )
-    fig_forecast.add_scatter(
-        x=monthly_data.index,
-        y=monthly_data['Jumlah'],
-        name='Data Historis'
-    )
-    fig_forecast.add_scatter(
-        x=forecast_index,
-        y=forecast.predicted_mean,
-        name='Peramalan',
-        line=dict(dash='dash')
-    )
-    fig_forecast.add_scatter(
-        x=forecast_index,
-        y=forecast.conf_int().iloc[:, 0],
-        line=dict(color='rgba(255,0,0,0.2)'),
-        name='Interval Kepercayaan'
-    )
-    fig_forecast.add_scatter(
-        x=forecast_index,
-        y=forecast.conf_int().iloc[:, 1],
-        line=dict(color='rgba(255,0,0,0.2)'),
-        name='Interval Kepercayaan',
-        showlegend=False
-    )
-    st.plotly_chart(fig_forecast, use_container_width=True)
+            # Plot forecast
+            fig_forecast = px.line(
+                title='Peramalan Stok',
+                template='plotly_white'
+            )
+            fig_forecast.add_scatter(
+                x=monthly_data.index,
+                y=monthly_data['Jumlah'],
+                name='Data Historis'
+            )
+            fig_forecast.add_scatter(
+                x=forecast_index,
+                y=forecast.predicted_mean,
+                name='Peramalan',
+                line=dict(dash='dash')
+            )
+            fig_forecast.add_scatter(
+                x=forecast_index,
+                y=forecast.conf_int().iloc[:, 0],
+                line=dict(color='rgba(255,0,0,0.2)'),
+                name='Interval Kepercayaan'
+            )
+            fig_forecast.add_scatter(
+                x=forecast_index,
+                y=forecast.conf_int().iloc[:, 1],
+                line=dict(color='rgba(255,0,0,0.2)'),
+                name='Interval Kepercayaan',
+                showlegend=False
+            )
+            st.plotly_chart(fig_forecast, use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"Gagal membuat peramalan: {str(e)}", icon="❌")
+    else:
+        st.warning("Tidak ada model ARIMA yang valid ditemukan", icon="⚠️")
 
     conn.close()
