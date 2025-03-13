@@ -48,8 +48,16 @@ def main():
 
     # Konversi ke time series bulanan
     try:
-        df['Tanggal'] = pd.to_datetime(df['Tanggal'])
+        # Pastikan kolom Tanggal hanya berisi tanggal (tanpa waktu)
+        df['Tanggal'] = pd.to_datetime(df['Tanggal']).dt.date
+        df['Tanggal'] = pd.to_datetime(df['Tanggal'])  # Konversi ulang ke datetime tanpa waktu
         df.set_index('Tanggal', inplace=True)
+
+        # Pastikan kolom Jumlah numerik
+        df['Jumlah'] = pd.to_numeric(df['Jumlah'], errors='coerce')  # Konversi ke numerik, abaikan nilai invalid
+        df = df.dropna(subset=['Jumlah'])  # Hapus baris dengan nilai NaN di kolom Jumlah
+
+        # Resample ke bulanan
         monthly_data = df.resample('ME').sum()  # Menggunakan ME (Month End)
     except Exception as e:
         st.error(f"Error konversi data: {str(e)}", icon="❌")
