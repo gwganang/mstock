@@ -2,7 +2,6 @@
 streamlit
 pandas
 numpy
-sqlite3
 
 # Visualization
 plotly
