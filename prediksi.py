@@ -50,7 +50,7 @@ def main():
     try:
         df['Tanggal'] = pd.to_datetime(df['Tanggal'])
         df.set_index('Tanggal', inplace=True)
-        monthly_data = df.resample('M').sum()
+        monthly_data = df.resample('ME').sum()  # Menggunakan ME (Month End)
     except Exception as e:
         st.error(f"Error konversi data: {str(e)}", icon="❌")
         return
@@ -118,14 +118,21 @@ def main():
         differenced = monthly_data
 
     # Fungsi helper untuk plot dengan penanganan error
-    def safe_plot(plot_func, *args, **kwargs):
+    def safe_plot(plot_func, data_series, *args, **kwargs):
         try:
             fig, ax = plt.subplots(figsize=(10,4))
-            max_lag = min(20, len(differenced)-1)
-            plot_func(*args, lags=max_lag, ax=ax, **kwargs)
+            sample_size = len(data_series)
+            max_allowed_lags = sample_size // 2 - 1  # 50% dari ukuran sampel
+            max_lag = min(20, max_allowed_lags)
+            
+            if max_lag < 1:
+                st.warning("Data terlalu pendek untuk analisis PACF", icon="⚠️")
+                return None
+                
+            plot_func(data_series, lags=max_lag, ax=ax, **kwargs)
             return fig
         except Exception as e:
-            st.error(f"Plot gagal: {str(e)}")
+            st.error(f"Plot gagal: {str(e)}", icon="❌")
             return None
 
     # Plot ACF dan PACF
@@ -154,8 +161,18 @@ def main():
         for p in p_values:
             for q in q_values:
                 try:
-                    model = ARIMA(monthly_data, order=(p, d, q))
-                    results_fit = model.fit()
+                    model = ARIMA(
+                        monthly_data,
+                        order=(p, d, q),
+                        enforce_invertibility=True,
+                        enforce_stationarity=True
+                    )
+                    results_fit = model.fit(
+                        method='innovations_mle',
+                        low_memory=True,
+                        disp=False,
+                        maxiter=1000
+                    )
                     mse = mean_squared_error(
                         monthly_data['Jumlah'][d:], 
                         results_fit.fittedvalues
@@ -187,8 +204,18 @@ def main():
         # Estimasi model terbaik
         st.subheader(f"Model Terpilih: ARIMA{best_order}")
         try:
-            final_model = ARIMA(monthly_data, order=best_order)
-            final_fit = final_model.fit()
+            final_model = ARIMA(
+                monthly_data,
+                order=best_order,
+                enforce_invertibility=True,
+                enforce_stationarity=True
+            )
+            final_fit = final_model.fit(
+                method='innovations_mle',
+                low_memory=True,
+                disp=False,
+                maxiter=1000
+            )
             st.text(final_fit.summary())
 
             # Forecast 12 bulan ke depan
@@ -197,7 +224,7 @@ def main():
             forecast_index = pd.date_range(
                 start=monthly_data.index[-1] + timedelta(days=1),
                 periods=12,
-                freq='M'
+                freq='ME'  # Menggunakan ME (Month End)
             )
 
             # Plot forecast
