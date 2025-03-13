@@ -187,11 +187,9 @@ def main():
                         enforce_invertibility=True,
                         enforce_stationarity=True
                     )
-                    results_fit = model.fit(
-                        method='innovations_mle',
-                        low_memory=True,
-                        maxiter=1000
-                    )
+                    # Hapus parameter 'maxiter' dan gunakan default fit()
+                    results_fit = model.fit(method_kwargs={"warn_convergence": False})
+                    
                     mse = mean_squared_error(
                         monthly_data['Jumlah'][d:], 
                         results_fit.fittedvalues
@@ -229,11 +227,8 @@ def main():
                 enforce_invertibility=True,
                 enforce_stationarity=True
             )
-            final_fit = final_model.fit(
-                method='innovations_mle',
-                low_memory=True,
-                maxiter=1000
-            )
+            # Hapus parameter 'maxiter' dan gunakan default fit()
+            final_fit = final_model.fit(method_kwargs={"warn_convergence": False})
             st.text(final_fit.summary())
 
             # Forecast 12 bulan ke depan
@@ -275,7 +270,7 @@ def main():
                 showlegend=False
             )
             st.plotly_chart(fig_forecast, use_container_width=True)
-            
+
         except Exception as e:
             st.error(f"Gagal membuat peramalan: {str(e)}", icon="❌")
     else:
