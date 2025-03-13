@@ -227,9 +227,63 @@ def main():
                 enforce_invertibility=True,
                 enforce_stationarity=True
             )
-            # Hapus parameter 'maxiter' dan gunakan default fit()
+            # Fit model tanpa parameter maxiter
             final_fit = final_model.fit(method_kwargs={"warn_convergence": False})
-            st.text(final_fit.summary())
+
+            # Parsing hasil summary ke DataFrame
+            summary = final_fit.summary()
+            summary_tables = summary.tables  # Mengambil semua tabel dari summary
+
+            # Tabel 1: Informasi Model
+            info_model = pd.DataFrame({
+                "Parameter": ["Dep. Variable", "Model", "No. Observations", "Log Likelihood", "AIC", "BIC", "HQIC"],
+                "Value": [
+                    summary_tables[0].data[1][1],
+                    summary_tables[0].data[2][1],
+                    int(summary_tables[0].data[3][1]),
+                    float(summary_tables[0].data[4][1]),
+                    float(summary_tables[0].data[5][1]),
+                    float(summary_tables[0].data[6][1]),
+                    float(summary_tables[0].data[7][1])
+                ]
+            })
+
+            # Tabel 2: Koefisien Model
+            coef_table = pd.DataFrame(summary_tables[1].data[1:], columns=summary_tables[1].data[0])
+            coef_table.columns = ["Parameter", "Coef", "Std Err", "z", "P>|z|", "[0.025", "0.975]"]
+            coef_table["Coef"] = coef_table["Coef"].astype(float)
+            coef_table["Std Err"] = coef_table["Std Err"].astype(float)
+
+            # Tabel 3: Diagnostik Model
+            diagnostics = pd.DataFrame({
+                "Metric": ["Ljung-Box (Q)", "Prob(Q)", "Jarque-Bera (JB)", "Prob(JB)", "Heteroskedasticity (H)", "Skew", "Kurtosis"],
+                "Value": [
+                    float(summary_tables[2].data[1][1]),
+                    float(summary_tables[2].data[1][3]),
+                    float(summary_tables[2].data[2][1]),
+                    float(summary_tables[2].data[2][3]),
+                    float(summary_tables[2].data[3][1]),
+                    float(summary_tables[2].data[4][1]),
+                    float(summary_tables[2].data[5][1])
+                ]
+            })
+
+            # Menampilkan tabel-tabel
+            st.subheader("Informasi Model")
+            st.table(info_model)
+
+            st.subheader("Koefisien Model")
+            st.dataframe(coef_table.style.format({
+                "Coef": "{:.4f}",
+                "Std Err": "{:.4f}",
+                "z": "{:.4f}",
+                "P>|z|": "{:.4f}",
+                "[0.025": "{:.4f}",
+                "0.975]": "{:.4f}"
+            }), use_container_width=True)
+
+            st.subheader("Diagnostik Model")
+            st.table(diagnostics.style.format({"Value": "{:.4f}"}))
 
             # Forecast 12 bulan ke depan
             st.subheader("Peramalan untuk 12 Bulan ke Depan")
