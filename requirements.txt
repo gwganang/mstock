@@ -1,15 +1,7 @@
-# Core dependencies
 streamlit
 pandas
 numpy
+statsmodels
 plotly
 matplotlib
-statsmodels
-
-# Time series dependencies
-pmdarima  # Versi stabil terakhir yang kompatibel dengan Python 3.11
-
-# Utils
-python-dotenv
-
-# SQLite (biasanya sudah built-in di Python)
+scikit-learn

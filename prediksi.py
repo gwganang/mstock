@@ -2,203 +2,201 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-from pmdarima import auto_arima
-import matplotlib.pyplot as plt
-from io import BytesIO
-import warnings
-warnings.filterwarnings("ignore")
+from sklearn.metrics import mean_squared_error
+from datetime import datetime, timedelta
+
+plt.style.use('ggplot')
 
 def main():
     st.header("📈 Prediksi Stok dengan ARIMA", divider="green")
     conn = sqlite3.connect('data/stok.db')
     c = conn.cursor()
 
-    # Ambil data produk
+    # Ambil daftar produk
     produk = c.execute("SELECT id, nama FROM produk").fetchall()
     if not produk:
-        st.warning("Tidak ada produk tersedia. Silakan tambah produk terlebih dahulu.", icon="⚠️")
+        st.warning("Tidak ada produk tersedia!", icon="⚠️")
         return
 
-    # Parameter Prediksi
-    with st.container():
-        st.subheader("🛠️ Parameter Prediksi")
-        col1, col2, col3 = st.columns([3, 1, 1])
-        with col1:
-            daftar_produk = [p[1] for p in produk]
-            produk_pilihan = st.selectbox(
-                "Produk yang akan diprediksi",
-                daftar_produk,
-                format_func=lambda x: f"📦 {x}",
-                help="Pilih produk untuk prediksi"
-            )
-            produk_id = next((p[0] for p in produk if p[1] == produk_pilihan), None)
-        with col2:
-            periode_prediksi = st.slider(
-                "Periode Prediksi (bulan)",
-                1, 24, 12,
-                help="Jumlah bulan yang akan diprediksi"
-            )
-        with col3:
-            model_confidence = st.slider(
-                "Tingkat Kepercayaan (%)",
-                80, 99, 95,
-                help="Interval kepercayaan prediksi"
-            )
+    # Pilih produk
+    selected_produk_id = st.selectbox(
+        "📦 Pilih Produk",
+        options=[p[0] for p in produk],
+        format_func=lambda x: next(p[1] for p in produk if p[0] == x),
+        help="Pilih produk untuk prediksi"
+    )
+    selected_produk_nama = next(p[1] for p in produk if p[0] == selected_produk_id)
 
-    # Ambil data historis
-    query = """
-    SELECT 
-        strftime('%Y-%m', tk.tanggal) as bulan,
-        SUM(tk.jumlah) as total_keluar
-    FROM transaksi_keluar tk
-    WHERE tk.produk_id = ?
-    GROUP BY strftime('%Y-%m', tk.tanggal)
-    ORDER BY strftime('%Y-%m', tk.tanggal)
-    """
-    df_history = pd.read_sql_query(query, conn, params=(produk_id,))
+    # Ambil data transaksi keluar 3 tahun terakhir
+    df = pd.read_sql_query('''
+        SELECT 
+            tanggal AS Tanggal,
+            jumlah AS Jumlah
+        FROM transaksi_keluar
+        WHERE produk_id = ? AND tanggal >= date('now', '-3 years')
+        ORDER BY tanggal ASC
+    ''', conn, params=(selected_produk_id,))
 
-    if len(df_history) < 12:
-        st.error("Data tidak cukup! Minimal 12 bulan data diperlukan untuk prediksi ARIMA")
+    if df.empty:
+        st.warning(f"Tidak ada data transaksi untuk {selected_produk_nama} dalam 3 tahun terakhir!", icon="⚠️")
         return
 
-    # Proses data historis
-    df_history['bulan'] = pd.to_datetime(df_history['bulan'] + '-01')
-    df_history.set_index('bulan', inplace=True)
-    date_range = pd.date_range(start=df_history.index.min(), end=df_history.index.max(), freq='MS')
-    df_history = df_history.reindex(date_range, method='ffill').fillna(0)
+    # Konversi ke time series bulanan
+    df['Tanggal'] = pd.to_datetime(df['Tanggal'])
+    df.set_index('Tanggal', inplace=True)
+    monthly_data = df.resample('M').sum()
 
-    # Analisis Stasioneritas
-    with st.expander("📊 Analisis Stasioneritas"):
-        result = adfuller(df_history['total_keluar'])
-        st.write(f'p-value: {result[1]:.4f}')
-        if result[1] > 0.05:
-            st.warning("Data tidak stasioner! Akan dilakukan differencing otomatis", icon="⚠️")
-        else:
-            st.success("Data stasioner", icon="✅")
+    # Tampilkan data
+    st.subheader(f"Data Transaksi {selected_produk_nama} (3 Tahun Terakhir)")
+    st.dataframe(monthly_data, use_container_width=True)
 
-        # Plot ACF dan PACF
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6))
-        plot_acf(df_history['total_keluar'], ax=ax1, lags=12)
-        plot_pacf(df_history['total_keluar'], ax=ax2, lags=12)
-        st.pyplot(fig)
-
-    # Pemodelan ARIMA
-    with st.spinner('Melakukan pemodelan ARIMA...'):
-        try:
-            # Auto ARIMA untuk pemilihan parameter optimal
-            auto_model = auto_arima(
-                df_history['total_keluar'],
-                seasonal=False,
-                stepwise=True,
-                trace=True,
-                error_action='ignore',
-                suppress_warnings=True
-            )
-            
-            # Model final dengan parameter terbaik
-            model = ARIMA(
-                df_history['total_keluar'],
-                order=auto_model.order
-            )
-            results = model.fit()
-
-            # Prediksi
-            forecast = results.get_forecast(steps=periode_prediksi)
-            forecast_mean = forecast.predicted_mean
-            conf_int = forecast.conf_int(alpha=(100 - model_confidence)/100)
-
-            # Format hasil
-            future_dates = pd.date_range(
-                start=df_history.index.max() + pd.DateOffset(months=1),
-                periods=periode_prediksi,
-                freq='MS'
-            )
-            
-            df_forecast = pd.DataFrame({
-                'bulan': future_dates,
-                'prediksi': forecast_mean,
-                'lower_ci': conf_int.iloc[:, 0],
-                'upper_ci': conf_int.iloc[:, 1]
-            }).set_index('bulan')
-
-        except Exception as e:
-            st.error(f"Gagal membuat model ARIMA: {str(e)}")
-            return
-
-    # Evaluasi Model
-    train_size = int(len(df_history) * 0.8)
-    train, test = df_history[:train_size], df_history[train_size:]
-    forecast_test = results.get_forecast(steps=len(test)).predicted_mean
-    mae = np.mean(np.abs(forecast_test - test['total_keluar']))
-    rmse = np.sqrt(np.mean((forecast_test - test['total_keluar'])**2))
-
-    # Visualisasi
-    df_combined = pd.DataFrame(index=df_history.index.union(df_forecast.index))
-    df_combined['historis'] = df_history['total_keluar']
-    df_combined['prediksi'] = np.nan
-    df_combined.loc[df_forecast.index, 'prediksi'] = df_forecast['prediksi']
-    df_combined['lower_ci'] = np.nan
-    df_combined.loc[df_forecast.index, 'lower_ci'] = df_forecast['lower_ci']
-    df_combined['upper_ci'] = np.nan
-    df_combined.loc[df_forecast.index, 'upper_ci'] = df_forecast['upper_ci']
-
-    # Plot
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_combined.index, y=df_combined['historis'],
-                             mode='lines', name='Historis',
-                             line=dict(color='#2ECC71', width=2)))
-    fig.add_trace(go.Scatter(x=df_combined.index, y=df_combined['prediksi'],
-                             mode='lines', name='Prediksi',
-                             line=dict(color='#3498DB', width=2, dash='dash')))
-    fig.add_trace(go.Scatter(
-        x=df_combined.index.tolist() + df_combined.index.tolist()[::-1],
-        y=df_combined['upper_ci'].tolist() + df_combined['lower_ci'].tolist()[::-1],
-        fill='toself',
-        fillcolor='rgba(52, 152, 219, 0.2)',
-        line=dict(color='rgba(255,255,255,0)'),
-        name=f'Interval {model_confidence}%'
-    ))
-    fig.update_layout(
-        title=f'Prediksi Penggunaan {produk_pilihan}',
-        xaxis_title='Bulan',
-        yaxis_title='Jumlah',
+    # Plot data asli
+    st.subheader("Grafik Transaksi")
+    fig = px.line(
+        monthly_data,
+        y='Jumlah',
+        title='Pola Transaksi Bulanan',
+        labels={'Jumlah': 'Jumlah Transaksi', 'Tanggal': 'Bulan'},
         template='plotly_white'
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Tabel prediksi
-    df_forecast_display = df_forecast.reset_index()
-    df_forecast_display.columns = ['Bulan', 'Prediksi', 'Batas Bawah', 'Batas Atas']
-    df_forecast_display['Bulan'] = df_forecast_display['Bulan'].dt.strftime('%B %Y')
-    df_forecast_display = df_forecast_display.applymap(lambda x: max(0, round(x)) if isinstance(x, (int, float)) else x)
+    # Uji stasioneritas
+    st.subheader("Uji Stasioneritas")
+    result = adfuller(monthly_data['Jumlah'].dropna())
+    st.write(f'ADF Statistic: {result[0]:.4f}')
+    st.write(f'p-value: {result[1]:.4f}')
+    st.write('Critical Values:')
+    for key, value in result[4].items():
+        st.write(f'  {key}: {value:.4f}')
 
-    st.subheader("📋 Tabel Prediksi")
+    # Differencing jika tidak stasioner
+    if result[1] > 0.05:
+        st.warning("Data tidak stasioner! Melakukan differencing...", icon="⚠️")
+        differenced = monthly_data.diff().dropna()
+        
+        # Plot differenced data
+        st.subheader("Grafik Data Differensiasi")
+        fig_diff = px.line(
+            differenced,
+            y='Jumlah',
+            title='Data Setelah Differencing',
+            labels={'Jumlah': 'Perubahan Jumlah', 'Tanggal': 'Bulan'},
+            template='plotly_white'
+        )
+        st.plotly_chart(fig_diff, use_container_width=True)
+        
+        # Uji stasioneritas setelah differencing
+        result_diff = adfuller(differenced['Jumlah'].dropna())
+        st.write("Hasil Uji Differencing:")
+        st.write(f'ADF Statistic: {result_diff[0]:.4f}')
+        st.write(f'p-value: {result_diff[1]:.4f}')
+    else:
+        differenced = monthly_data
+
+    # Plot ACF dan PACF
+    st.subheader("Analisis ACF dan PACF")
+    col1, col2 = st.columns(2)
+    with col1:
+        fig, ax = plt.subplots(figsize=(10,4))
+        plot_acf(differenced['Jumlah'], lags=20, ax=ax)
+        st.pyplot(fig)
+    with col2:
+        fig, ax = plt.subplots(figsize=(10,4))
+        plot_pacf(differenced['Jumlah'], lags=20, ax=ax)
+        st.pyplot(fig)
+
+    # Pencarian parameter ARIMA terbaik
+    st.subheader("Pemilihan Model ARIMA")
+    p_values = range(0, 3)
+    q_values = range(0, 3)
+    d = 1 if result[1] > 0.05 else 0
+
+    best_mse = np.inf
+    best_order = None
+    results = []
+
+    with st.spinner("Mencari model terbaik..."):
+        for p in p_values:
+            for q in q_values:
+                try:
+                    model = ARIMA(monthly_data, order=(p, d, q))
+                    results_fit = model.fit()
+                    mse = mean_squared_error(
+                        monthly_data['Jumlah'][d:], 
+                        results_fit.fittedvalues
+                    )
+                    results.append({
+                        'order': f'({p},{d},{q})',
+                        'MSE': mse,
+                        'AIC': results_fit.aic
+                    })
+                    if mse < best_mse:
+                        best_mse = mse
+                        best_order = (p, d, q)
+                except:
+                    continue
+
+    # Tampilkan hasil perbandingan
     st.dataframe(
-        df_forecast_display.style.format({
-            'Prediksi': '{:,.0f}',
-            'Batas Bawah': '{:,.0f}',
-            'Batas Atas': '{:,.0f}'
-        }),
+        pd.DataFrame(results).sort_values('MSE'),
+        column_config={
+            "order": "Model Order",
+            "MSE": st.column_config.NumberColumn("MSE", format="%.2f"),
+            "AIC": st.column_config.NumberColumn("AIC", format="%.2f")
+        },
         use_container_width=True
     )
 
-    # Metrik evaluasi
-    st.subheader("🔍 Evaluasi Model")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("MAE", f"{mae:.2f}", help="Mean Absolute Error")
-    with col2:
-        st.metric("RMSE", f"{rmse:.2f}", help="Root Mean Squared Error")
+    # Estimasi model terbaik
+    st.subheader(f"Model Terpilih: ARIMA{best_order}")
+    final_model = ARIMA(monthly_data, order=best_order)
+    final_fit = final_model.fit()
+    st.text(final_fit.summary())
 
-    # Ringkasan model
-    with st.expander("📚 Ringkasan Model ARIMA"):
-        st.write(f"Parameter ARIMA terpilih: {auto_model.order}")
-        st.code(results.summary().as_text())
+    # Forecast 12 bulan ke depan
+    st.subheader("Peramalan untuk 12 Bulan ke Depan")
+    forecast = final_fit.get_forecast(steps=12)
+    forecast_index = pd.date_range(
+        start=monthly_data.index[-1] + timedelta(days=1),
+        periods=12,
+        freq='M'
+    )
+
+    # Plot forecast
+    fig_forecast = px.line(
+        title='Peramalan Stok',
+        template='plotly_white'
+    )
+    fig_forecast.add_scatter(
+        x=monthly_data.index,
+        y=monthly_data['Jumlah'],
+        name='Data Historis'
+    )
+    fig_forecast.add_scatter(
+        x=forecast_index,
+        y=forecast.predicted_mean,
+        name='Peramalan',
+        line=dict(dash='dash')
+    )
+    fig_forecast.add_scatter(
+        x=forecast_index,
+        y=forecast.conf_int().iloc[:, 0],
+        line=dict(color='rgba(255,0,0,0.2)'),
+        name='Interval Kepercayaan'
+    )
+    fig_forecast.add_scatter(
+        x=forecast_index,
+        y=forecast.conf_int().iloc[:, 1],
+        line=dict(color='rgba(255,0,0,0.2)'),
+        name='Interval Kepercayaan',
+        showlegend=False
+    )
+    st.plotly_chart(fig_forecast, use_container_width=True)
 
     conn.close()
