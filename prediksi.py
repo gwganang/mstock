@@ -6,19 +6,16 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from statsmodels.tsa.arima.model import ARIMA
-from statsmodels.tsa.statespace.sarimax import SARIMAX
-from prophet import Prophet
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from pmdarima import auto_arima
 import matplotlib.pyplot as plt
 from io import BytesIO
 import warnings
 warnings.filterwarnings("ignore")
 
 def main():
-    st.header("📈 Prediksi Stok", divider="green")
+    st.header("📈 Prediksi Stok dengan ARIMA", divider="green")
     conn = sqlite3.connect('data/stok.db')
     c = conn.cursor()
 
@@ -31,7 +28,7 @@ def main():
     # Parameter Prediksi
     with st.container():
         st.subheader("🛠️ Parameter Prediksi")
-        col1, col2, col3, col4 = st.columns([3, 1, 1, 2])
+        col1, col2, col3 = st.columns([3, 1, 1])
         with col1:
             daftar_produk = [p[1] for p in produk]
             produk_pilihan = st.selectbox(
@@ -53,12 +50,6 @@ def main():
                 80, 99, 95,
                 help="Interval kepercayaan prediksi"
             )
-        with col4:
-            model_choice = st.selectbox(
-                "Metode Prediksi",
-                ["ARIMA", "SARIMA", "Prophet", "LSTM"],
-                help="Pilih algoritma prediksi"
-            )
 
     # Ambil data historis
     query = """
@@ -72,8 +63,8 @@ def main():
     """
     df_history = pd.read_sql_query(query, conn, params=(produk_id,))
 
-    if len(df_history) < 12 and model_choice in ["SARIMA", "Prophet", "LSTM"]:
-        st.error("Data tidak cukup! Minimal 12 bulan data diperlukan untuk model musiman/Prophet/LSTM")
+    if len(df_history) < 12:
+        st.error("Data tidak cukup! Minimal 12 bulan data diperlukan untuk prediksi ARIMA")
         return
 
     # Proses data historis
@@ -82,119 +73,70 @@ def main():
     date_range = pd.date_range(start=df_history.index.min(), end=df_history.index.max(), freq='MS')
     df_history = df_history.reindex(date_range, method='ffill').fillna(0)
 
-    # Tampilkan data historis
-    st.subheader("📊 Data Historis Penggunaan")
-    fig_history = px.line(
-        df_history,
-        y='total_keluar',
-        title=f'Penggunaan Historis {produk_pilihan}',
-        labels={'total_keluar': 'Jumlah', 'bulan': 'Bulan'},
-        markers=True,
-        template='plotly_white'
-    )
-    fig_history.update_traces(line_color='#2ECC71', marker=dict(size=8))
-    st.plotly_chart(fig_history, use_container_width=True)
+    # Analisis Stasioneritas
+    with st.expander("📊 Analisis Stasioneritas"):
+        result = adfuller(df_history['total_keluar'])
+        st.write(f'p-value: {result[1]:.4f}')
+        if result[1] > 0.05:
+            st.warning("Data tidak stasioner! Akan dilakukan differencing otomatis", icon="⚠️")
+        else:
+            st.success("Data stasioner", icon="✅")
 
-    # Pemodelan
-    if model_choice == "ARIMA":
+        # Plot ACF dan PACF
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6))
+        plot_acf(df_history['total_keluar'], ax=ax1, lags=12)
+        plot_pacf(df_history['total_keluar'], ax=ax2, lags=12)
+        st.pyplot(fig)
+
+    # Pemodelan ARIMA
+    with st.spinner('Melakukan pemodelan ARIMA...'):
         try:
-            model = ARIMA(df_history['total_keluar'], order=(1,1,1))
+            # Auto ARIMA untuk pemilihan parameter optimal
+            auto_model = auto_arima(
+                df_history['total_keluar'],
+                seasonal=False,
+                stepwise=True,
+                trace=True,
+                error_action='ignore',
+                suppress_warnings=True
+            )
+            
+            # Model final dengan parameter terbaik
+            model = ARIMA(
+                df_history['total_keluar'],
+                order=auto_model.order
+            )
             results = model.fit()
+
+            # Prediksi
             forecast = results.get_forecast(steps=periode_prediksi)
             forecast_mean = forecast.predicted_mean
             conf_int = forecast.conf_int(alpha=(100 - model_confidence)/100)
+
+            # Format hasil
+            future_dates = pd.date_range(
+                start=df_history.index.max() + pd.DateOffset(months=1),
+                periods=periode_prediksi,
+                freq='MS'
+            )
+            
+            df_forecast = pd.DataFrame({
+                'bulan': future_dates,
+                'prediksi': forecast_mean,
+                'lower_ci': conf_int.iloc[:, 0],
+                'upper_ci': conf_int.iloc[:, 1]
+            }).set_index('bulan')
+
         except Exception as e:
             st.error(f"Gagal membuat model ARIMA: {str(e)}")
             return
 
-    elif model_choice == "SARIMA":
-        try:
-            model = SARIMAX(df_history['total_keluar'], 
-                           order=(1,1,1), 
-                           seasonal_order=(1,1,1,12))
-            results = model.fit(disp=False)
-            forecast = results.get_forecast(steps=periode_prediksi)
-            forecast_mean = forecast.predicted_mean
-            conf_int = forecast.conf_int(alpha=(100 - model_confidence)/100)
-        except Exception as e:
-            st.error(f"Gagal membuat model SARIMA: {str(e)}")
-            return
-
-    elif model_choice == "Prophet":
-        try:
-            df_prophet = df_history.reset_index().rename(columns={'bulan':'ds', 'total_keluar':'y'})
-            model = Prophet(interval_width=model_confidence/100)
-            model.fit(df_prophet)
-            future = model.make_future_dataframe(periods=periode_prediksi, freq='MS')
-            forecast = model.predict(future)
-            forecast_mean = forecast['yhat'][-periode_prediksi:].values
-            conf_int = forecast[['yhat_lower', 'yhat_upper']][-periode_prediksi:].values.T
-        except Exception as e:
-            st.error(f"Gagal membuat model Prophet: {str(e)}")
-            return
-
-    elif model_choice == "LSTM":
-        try:
-            # Preprocessing data
-            scaler = MinMaxScaler()
-            scaled_data = scaler.fit_transform(df_history.values)
-            
-            # Membuat dataset time series
-            def create_dataset(data, time_step=1):
-                X, y = [], []
-                for i in range(len(data)-time_step-1):
-                    X.append(data[i:(i+time_step), 0])
-                    y.append(data[i + time_step, 0])
-                return np.array(X), np.array(y)
-            
-            time_step = 12
-            X, y = create_dataset(scaled_data, time_step)
-            X = X.reshape(X.shape[0], X.shape[1], 1)
-            
-            # Membuat model LSTM
-            model = Sequential()
-            model.add(LSTM(50, return_sequences=True, input_shape=(time_step, 1)))
-            model.add(LSTM(50, return_sequences=False))
-            model.add(Dense(25))
-            model.add(Dense(1))
-            
-            model.compile(optimizer='adam', loss='mean_squared_error')
-            model.fit(X, y, batch_size=1, epochs=50, verbose=0)
-            
-            # Prediksi
-            test_input = scaled_data[-time_step:]
-            test_input = test_input.reshape((1, time_step, 1))
-            forecast_scaled = model.predict(test_input)
-            forecast_mean = scaler.inverse_transform(forecast_scaled)[0][0]
-            forecast_mean = np.repeat(forecast_mean, periode_prediksi)
-            
-            # Confidence interval (simulasi)
-            conf_int = np.array([forecast_mean*0.9, forecast_mean*1.1])
-        except Exception as e:
-            st.error(f"Gagal membuat model LSTM: {str(e)}")
-            return
-
-    # Format hasil prediksi
-    future_dates = pd.date_range(start=df_history.index.max() + pd.DateOffset(months=1), 
-                                 periods=periode_prediksi, 
-                                 freq='MS')
-    
-    df_forecast = pd.DataFrame({
-        'bulan': future_dates,
-        'prediksi': forecast_mean,
-        'lower_ci': conf_int[0],
-        'upper_ci': conf_int[1]
-    }).set_index('bulan')
-
-    # Evaluasi model
-    if model_choice != "LSTM":
-        train_size = int(len(df_history) * 0.8)
-        train, test = df_history[:train_size], df_history[train_size:]
-        forecast_test = results.get_forecast(steps=len(test)).predicted_mean
-        mae = mean_absolute_error(test, forecast_test)
-        rmse = np.sqrt(mean_squared_error(test, forecast_test))
-    else:
-        mae, rmse = np.nan, np.nan
+    # Evaluasi Model
+    train_size = int(len(df_history) * 0.8)
+    train, test = df_history[:train_size], df_history[train_size:]
+    forecast_test = results.get_forecast(steps=len(test)).predicted_mean
+    mae = np.mean(np.abs(forecast_test - test['total_keluar']))
+    rmse = np.sqrt(np.mean((forecast_test - test['total_keluar'])**2))
 
     # Visualisasi
     df_combined = pd.DataFrame(index=df_history.index.union(df_forecast.index))
@@ -223,7 +165,7 @@ def main():
         name=f'Interval {model_confidence}%'
     ))
     fig.update_layout(
-        title=f'Prediksi Penggunaan {produk_pilihan} ({model_choice})',
+        title=f'Prediksi Penggunaan {produk_pilihan}',
         xaxis_title='Bulan',
         yaxis_title='Jumlah',
         template='plotly_white'
@@ -250,10 +192,13 @@ def main():
     st.subheader("🔍 Evaluasi Model")
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("MAE", f"{mae:.2f}" if not np.isnan(mae) else "N/A", 
-                 help="Mean Absolute Error")
+        st.metric("MAE", f"{mae:.2f}", help="Mean Absolute Error")
     with col2:
-        st.metric("RMSE", f"{rmse:.2f}" if not np.isnan(rmse) else "N/A",
-                 help="Root Mean Squared Error")
+        st.metric("RMSE", f"{rmse:.2f}", help="Root Mean Squared Error")
+
+    # Ringkasan model
+    with st.expander("📚 Ringkasan Model ARIMA"):
+        st.write(f"Parameter ARIMA terpilih: {auto_model.order}")
+        st.code(results.summary().as_text())
 
     conn.close()
