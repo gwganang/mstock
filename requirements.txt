@@ -1,9 +1,21 @@
+# Core dependencies
 streamlit
 pandas
 numpy
+sqlite3
+
+# Visualization
 plotly
+matplotlib
+
+# Time series analysis
 statsmodels
-pystan
-prophet
-tensorflow
-scikit-learn
+pmdarima  # Untuk auto_arima
+prophet   # Model time series dari Facebook
+
+# Machine Learning
+tensorflow  # Untuk LSTM
+scikit-learn  # Preprocessing dan evaluasi
+
+# Other
+python-dotenv  # Opsional untuk manajemen environment

@@ -8,10 +8,10 @@ from datetime import datetime, timedelta
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from prophet import Prophet
-from prophet.plot import plot_plotly
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 import matplotlib.pyplot as plt
 from io import BytesIO
 import warnings
@@ -31,7 +31,7 @@ def main():
     # Parameter Prediksi
     with st.container():
         st.subheader("🛠️ Parameter Prediksi")
-        col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+        col1, col2, col3, col4 = st.columns([3, 1, 1, 2])
         with col1:
             daftar_produk = [p[1] for p in produk]
             produk_pilihan = st.selectbox(
@@ -80,7 +80,20 @@ def main():
     df_history['bulan'] = pd.to_datetime(df_history['bulan'] + '-01')
     df_history.set_index('bulan', inplace=True)
     date_range = pd.date_range(start=df_history.index.min(), end=df_history.index.max(), freq='MS')
-    df_history = df_history.reindex(date_range, fill_value=0)
+    df_history = df_history.reindex(date_range, method='ffill').fillna(0)
+
+    # Tampilkan data historis
+    st.subheader("📊 Data Historis Penggunaan")
+    fig_history = px.line(
+        df_history,
+        y='total_keluar',
+        title=f'Penggunaan Historis {produk_pilihan}',
+        labels={'total_keluar': 'Jumlah', 'bulan': 'Bulan'},
+        markers=True,
+        template='plotly_white'
+    )
+    fig_history.update_traces(line_color='#2ECC71', marker=dict(size=8))
+    st.plotly_chart(fig_history, use_container_width=True)
 
     # Pemodelan
     if model_choice == "ARIMA":
@@ -95,25 +108,17 @@ def main():
             return
 
     elif model_choice == "SARIMA":
-    try:
-        model = SARIMAX(df_history['total_keluar'], 
-                       order=(1,1,1), 
-                       seasonal_order=(1,1,1,12))
-        results = model.fit(disp=False)
-        forecast = results.get_forecast(steps=periode_prediksi)
-        forecast_mean = forecast.predicted_mean
-        conf_int = forecast.conf_int(alpha=(100 - model_confidence)/100)
-        
-        # Perbaikan: Gunakan nama kolom yang valid
-        df_forecast = pd.DataFrame({
-            'bulan': future_dates,
-            'prediksi': forecast_mean,
-            'lower_ci': conf_int['lower'],  # Ganti indeks dengan nama kolom
-            'upper_ci': conf_int['upper']   # Ganti indeks dengan nama kolom
-        }).set_index('bulan')
-    except Exception as e:
-        st.error(f"Gagal membuat model SARIMA: {str(e)}")
-        return
+        try:
+            model = SARIMAX(df_history['total_keluar'], 
+                           order=(1,1,1), 
+                           seasonal_order=(1,1,1,12))
+            results = model.fit(disp=False)
+            forecast = results.get_forecast(steps=periode_prediksi)
+            forecast_mean = forecast.predicted_mean
+            conf_int = forecast.conf_int(alpha=(100 - model_confidence)/100)
+        except Exception as e:
+            st.error(f"Gagal membuat model SARIMA: {str(e)}")
+            return
 
     elif model_choice == "Prophet":
         try:
@@ -154,7 +159,7 @@ def main():
             model.add(Dense(1))
             
             model.compile(optimizer='adam', loss='mean_squared_error')
-            model.fit(X, y, batch_size=1, epochs=20, verbose=0)
+            model.fit(X, y, batch_size=1, epochs=50, verbose=0)
             
             # Prediksi
             test_input = scaled_data[-time_step:]
@@ -180,6 +185,16 @@ def main():
         'lower_ci': conf_int[0],
         'upper_ci': conf_int[1]
     }).set_index('bulan')
+
+    # Evaluasi model
+    if model_choice != "LSTM":
+        train_size = int(len(df_history) * 0.8)
+        train, test = df_history[:train_size], df_history[train_size:]
+        forecast_test = results.get_forecast(steps=len(test)).predicted_mean
+        mae = mean_absolute_error(test, forecast_test)
+        rmse = np.sqrt(mean_squared_error(test, forecast_test))
+    else:
+        mae, rmse = np.nan, np.nan
 
     # Visualisasi
     df_combined = pd.DataFrame(index=df_history.index.union(df_forecast.index))
@@ -230,5 +245,15 @@ def main():
         }),
         use_container_width=True
     )
+
+    # Metrik evaluasi
+    st.subheader("🔍 Evaluasi Model")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("MAE", f"{mae:.2f}" if not np.isnan(mae) else "N/A", 
+                 help="Mean Absolute Error")
+    with col2:
+        st.metric("RMSE", f"{rmse:.2f}" if not np.isnan(rmse) else "N/A",
+                 help="Root Mean Squared Error")
 
     conn.close()
