@@ -122,7 +122,7 @@ def main():
         try:
             fig, ax = plt.subplots(figsize=(10,4))
             sample_size = len(data_series)
-            max_allowed_lags = (sample_size - 1) // 2 - 1  # Perbaikan utama di sini
+            max_allowed_lags = (sample_size - 1) // 2 - 1
             max_lag = min(20, max_allowed_lags)
             
             if max_lag < 1:
@@ -170,8 +170,7 @@ def main():
                     results_fit = model.fit(
                         method='innovations_mle',
                         low_memory=True,
-                        disp=False,
-                        maxiter=1000
+                        maxiter=1000  # Hapus parameter 'disp'
                     )
                     mse = mean_squared_error(
                         monthly_data['Jumlah'][d:], 
@@ -213,8 +212,7 @@ def main():
             final_fit = final_model.fit(
                 method='innovations_mle',
                 low_memory=True,
-                disp=False,
-                maxiter=1000
+                maxiter=1000  # Hapus parameter 'disp'
             )
             st.text(final_fit.summary())
 
