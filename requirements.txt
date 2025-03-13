@@ -1,8 +1,15 @@
-streamlit
-pandas
-numpy
-plotly
-matplotlib
-statsmodels
-pmdarima
-python-dotenv  # Opsional untuk konfigurasi
+# Core dependencies
+streamlit==1.32.0
+pandas==2.2.2
+numpy==1.26.4
+plotly==5.22.0
+matplotlib==3.9.1
+statsmodels==0.14.2
+
+# Time series dependencies
+pmdarima==1.8.5  # Versi stabil terakhir yang kompatibel dengan Python 3.11
+
+# Utils
+python-dotenv==1.0.1
+
+# SQLite (biasanya sudah built-in di Python)
