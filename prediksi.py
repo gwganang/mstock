@@ -61,9 +61,29 @@ def main():
                    icon="⚠️")
         return
 
-    # Tampilkan data
+    # Tampilkan data dalam format 6 kolom
     st.subheader(f"Data Transaksi {selected_produk_nama} (3 Tahun Terakhir)")
-    st.dataframe(monthly_data, use_container_width=True)
+    num_groups = 3  # Setiap grup terdiri dari 2 kolom (Tanggal dan Jumlah)
+    split_data = np.array_split(monthly_data.reset_index(), num_groups)
+    combined_data = pd.concat(
+        [group.reset_index(drop=True) for group in split_data], axis=1
+    )
+    column_names = []
+    for i in range(num_groups):
+        column_names.extend([f"Tanggal_{i+1}", f"Jumlah_{i+1}"])
+    combined_data.columns = column_names
+    st.dataframe(
+        combined_data,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            f"Tanggal_{i+1}": st.column_config.DateColumn(f"Tanggal {i+1}")
+            for i in range(num_groups)
+        } | {
+            f"Jumlah_{i+1}": st.column_config.NumberColumn(f"Jumlah {i+1}", format="%d")
+            for i in range(num_groups)
+        }
+    )
 
     # Plot data asli
     st.subheader("Grafik Transaksi")
@@ -170,7 +190,7 @@ def main():
                     results_fit = model.fit(
                         method='innovations_mle',
                         low_memory=True,
-                        maxiter=1000  # Hapus parameter 'disp'
+                        maxiter=1000
                     )
                     mse = mean_squared_error(
                         monthly_data['Jumlah'][d:], 
@@ -212,7 +232,7 @@ def main():
             final_fit = final_model.fit(
                 method='innovations_mle',
                 low_memory=True,
-                maxiter=1000  # Hapus parameter 'disp'
+                maxiter=1000
             )
             st.text(final_fit.summary())
 
